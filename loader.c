@@ -10,12 +10,13 @@
 #include <ctype.h>
 
 #define MAX_MATCHES 32
-
+#define MAX_ARGS 1024
+#define MAX_ARGS_LEN 4096
 static void loader_main() __attribute__((constructor));
 
-char cmdline[256];
+char cmdline[MAX_ARGS_LEN];
+char *args[MAX_ARGS];
 char loader[] = "firejail";
-char loaderCmdline[256];
 char confFile[256];
 char *names[MAX_MATCHES];
 
@@ -37,10 +38,52 @@ void remove_trailing_spaces(char *str)
         str++;
     }
 }
+
+void read_cmdline()
+{
+    int fd = open("/proc/self/cmdline", O_RDONLY);
+    ssize_t ret = 0, total = 0;
+    char* wcmdbuf = cmdline;
+    while ((ret = read(fd, wcmdbuf, 1)) != 0)
+    {
+        wcmdbuf++;
+        total += ret;
+        if (total > MAX_ARGS_LEN)
+        {
+            printf("Not enough memory\n");
+            close(fd);
+            return ;
+        }
+    }
+    close(fd);
+}
+
+void make_args()
+{
+    int cI = 0, argI=0;
+    char* argstart = &cmdline[0];
+    for (;cI<MAX_ARGS_LEN;cI++)
+    {
+        if (cmdline[cI] == '\0')
+        {
+            args[argI]= argstart; 
+            argstart = &cmdline[cI+1];
+            argI++;
+            if (*argstart  == '\0')
+            {
+                break;
+            }
+        }
+    }
+    args[argI] = argstart;
+    argI++;
+    args[argI] = NULL;
+}
+
 void loader_main()
 {
     snprintf(confFile, 255, "%s/.loader.conf", getenv("HOME"));
-    DBG("%s\n", confFile);
+
     struct stat confFileStat;
     
     stat(confFile, &confFileStat);
@@ -49,29 +92,29 @@ void loader_main()
     
     if (confFd == -1)
     {
+        close(confFd);
         return;
     }
-    DBG("%s\n", confFile);
     char* conf = (char*) malloc(confFileStat.st_size);
     if (conf == NULL)
     {
+        close(confFd);
         return;
     }
-    DBG("%s\n", confFile);
     ssize_t ret  = read(confFd, conf, confFileStat.st_size);
     if (ret == -1)
     {
+        close(confFd);
         return;
     }
+    
+    close(confFd);
     size_t fI = 0;
     int matchId = 0;
-    DBG("%s\n", confFile);
     names[matchId] = conf;
     matchId++;
-    DBG("%s\n", confFile);
     for (;fI < confFileStat.st_size-1;fI++)
     {
-        DBG("%c\n",conf[fI]);
         if (conf[fI] == ',')
         {
             names[matchId] = &conf[fI+1];
@@ -83,25 +126,31 @@ void loader_main()
        
     remove_trailing_spaces(names[matchId-1]);
    
-   
-    int fd = open("/proc/self/cmdline", O_RDONLY);
-    read(fd, cmdline, 255);
-    cmdline[255]='\0';
-    DBG("main %s", cmdline);
+    read_cmdline();
+    
+    make_args();
+    
+#ifdef DEBUG
+    int xarg=0;
+    while (args[xarg] != NULL)
+    {
+        DBG(".%s\n", args[xarg]);
+        xarg++;
+    }
+#endif
+
     int x;
-    
-    close(confFd);
-    close(fd);
-    
+       
     for (x = 0;x<matchId;x++)
     {
         DBG("%s\n",names[x]);
-        if (strstr(cmdline, names[x]) != NULL)
+        if (strstr(args[0], names[x]) != NULL)
         {
             DBG("highjack!\n");
             
             free(conf);
-            execlp(loader, cmdline, NULL);
+            
+            execvp(loader, args );
         }
     }
     
